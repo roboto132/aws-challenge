@@ -1,0 +1,163 @@
+service: curso-1
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: 'dynamodb:*'
+          Resource: arn:aws:dynamodb:us-east-1:395542348363:table/usersTable
+        - Effect: Allow
+          Action: 's3:*'
+          Resource: arn:aws:s3:::bariloche-roboto-132/*
+  environment:
+    BUCKET_NAME: bariloche-roboto-132
+
+plugins:
+  - serverless-apigateway-service-proxy
+  - serverless-lift
+  - serverless-webpack
+
+custom:
+  apiGatewayServiceProxies:
+    - sqs:
+        path: /likeuser
+        method: post
+        queueName: likequeue
+        cors: true
+        response:
+          template:
+            # `success` is used when the integration response is 200
+            success: |-
+              { "message: "accepted" }
+            # `clientError` is used when the integration response is 400
+            clientError: |-
+              { "message": "there is an error in your request" }
+            # `serverError` is used when the integration response is 500
+            serverError: |-
+              { "message": "there was an error handling your request" }
+
+package:
+  individually: true
+
+constructs:
+    sqs-queue:
+        type: queue
+        # batchSize: 1
+        worker:
+            handler: src/lambdas/worker/worker.handler
+            package:
+              patterns:
+                - "src/lambdas/worker/worker.js"
+            # reservedConcurrency: 1
+        extensions:
+          queue:
+            Properties:
+              QueueName: likequeue
+
+functions:
+  get-user:
+    handler: src/lambdas/getUser/handler.getUser
+    package:
+      patterns:
+        - "src/lambdas/getUser/handler.js"
+    events:
+      - http:
+          path: user/{userId}
+          method: GET
+          request:
+            parameters:
+              paths:
+                userId: true
+  post-user:
+    handler: src/lambdas/createUser/handler.postUser
+    package:
+      patterns:
+        - "src/lambdas/createUser/handler.js"
+    events:
+      - http:
+          path: user
+          method: POST
+          request:
+            schemas:
+              application/json: ${file(schemas/user-schema.json)}
+  update-user:
+    handler: src/lambdas/updateUser/handler.updateUser
+    package:
+      patterns:
+        - "src/lambdas/updateUser/handler.js"
+    events:
+      - http:
+          path: user/{userId}
+          method: PATCH
+          request:
+            parameters:
+              paths:
+                userId: true
+            schemas:
+              application/json: ${file(schemas/user-schema.json)}
+  sign-url:
+    handler: src/lambdas/bucketSign/handler.signUrl
+    package:
+      patterns:
+        - "src/lambdas/bucketSign/handler.js"
+    events:
+      - http:
+          path: sign-url
+          method: GET
+          request:
+            parameters:
+              querystrings:
+                fileName: true
+  thumb-generator:
+    handler: src/lambdas/thumbGenerator/handler.thumbGenerator
+    events:
+      - s3:
+          bucket: bariloche-roboto-132
+          event: s3:ObjectCreated:*
+          existing: true
+          rules:
+            - prefix: upload/
+
+resources:
+  Resources:
+    usersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: usersTable
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+    S3Bucket:
+      Type: 'AWS::S3::Bucket'
+      Properties:
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+        BucketName: bariloche-roboto-132
+    SampleBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: !Ref S3Bucket
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Action:
+                - 's3:GetObject'
+              Effect: Allow
+              Resource: !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref S3Bucket
+                  - /*
+              Principal: '*'
